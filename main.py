@@ -30,6 +30,7 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)  # Set to 30 days
 # Add this configuration
 
 
+
 database_url = os.environ.get('DATABASE_URL')
 
 
@@ -54,6 +55,8 @@ CORS(
         "origins": [
             "http://localhost:3000",
             "http://127.0.0.1:3000",
+            "https://www.faqtor.co",  # Add this!
+            "https://faqtor.co"       # Add this too (without www)
            
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
