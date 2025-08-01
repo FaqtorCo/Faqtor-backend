@@ -311,6 +311,46 @@ def check_chatbot_eligibility():
         return jsonify({"message": "Error checking eligibility", "error": str(e)}), 500
 
 # New endpoint to send chatbot message with restrictions
+# Add this function outside of any route, near the top of your file after imports
+def generate_fallback_response(message, prompt):
+    """Generate a contextual fallback response based on the prompt"""
+    if not prompt:
+        return "I understand your question. Let me help you with that!"
+    
+    # Extract business type/context from prompt for better fallback responses
+    message_lower = message.lower()
+    prompt_lower = prompt.lower()
+    
+    # Common business response patterns
+    if any(word in message_lower for word in ['hours', 'open', 'close', 'time']):
+        if 'bakery' in prompt_lower:
+            return "We're typically open Monday-Saturday 6AM-7PM, Sunday 7AM-5PM, but please check our current hours as they may vary."
+        elif 'restaurant' in prompt_lower:
+            return "We're usually open Tuesday-Sunday 5PM-10PM, closed Mondays, but please verify our current hours."
+        else:
+            return "I'd be happy to help with our hours. Please check our website or call us for the most current operating hours."
+    
+    elif any(word in message_lower for word in ['price', 'cost', 'how much', 'pricing']):
+        return "I'd be happy to help with pricing information. Our rates vary depending on your specific needs. Would you like me to connect you with someone who can provide detailed pricing?"
+    
+    elif any(word in message_lower for word in ['location', 'address', 'where']):
+        return "I can help you find our location. Please visit our website or contact us directly for our current address and directions."
+    
+    elif any(word in message_lower for word in ['services', 'offer', 'provide', 'do']):
+        if 'bakery' in prompt_lower:
+            return "We offer fresh baked goods, custom cakes, artisanal breads, and seasonal pastries. We also provide cake decorating classes and take custom orders."
+        elif 'tech' in prompt_lower or 'software' in prompt_lower:
+            return "We provide technical support, software solutions, and troubleshooting services. How can I assist you with your specific technical needs?"
+        elif 'restaurant' in prompt_lower:
+            return "We specialize in farm-to-table cuisine with seasonal menus, private dining, wine pairings, and Sunday brunch. We focus on local, organic ingredients."
+        else:
+            return "We offer a range of services tailored to meet your needs. Could you tell me more about what you're looking for?"
+    
+    else:
+        return "Thank you for your question. I'm here to help! Could you provide a bit more detail about what you're looking for?"
+
+
+# Replace your existing /api/chatbot/send-message endpoint with this:
 @app.route('/api/chatbot/send-message', methods=['POST'])
 @jwt_required()
 def send_chatbot_message():
@@ -357,25 +397,90 @@ def send_chatbot_message():
         
         db.session.commit()
         
-        # Here you can integrate with your AI service or return a mock response
-        # For now, returning a simple response
-        response_text = f"Thank you for your message: '{message}'. This is a demo response from your configured chatbot."
-        
-        return jsonify({
-            "response": response_text,
-            "messageCount": chatbot_usage.message_count,
-            "canUse": chatbot_usage.message_count < 3
-        }), 200
+        # Call the N8N webhook for AI response
+        try:
+            webhook_url = 'https://n8n.softtik.com/webhook/e4a1d330-231b-4199-8f47-c7bb79ed3a94/chat'
+            
+            payload = {
+                "action": "sendMessage",
+                "chatInput": message,
+                "metadata": {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "userAgent": "Flask Backend",
+                    "conversationLength": chatbot_usage.message_count,
+                    "prompt": prompt
+                },
+                "sessionId": session_id,
+                "prompt": prompt
+            }
+            
+            print(f"Calling webhook with payload: {payload}")  # Debug log
+            
+            response = requests.post(
+                webhook_url,
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=30
+            )
+            
+            print(f"Webhook response status: {response.status_code}")  # Debug log
+            print(f"Webhook response: {response.text}")  # Debug log
+            
+            if response.status_code == 200:
+                # Handle different response formats
+                content_type = response.headers.get("content-type", "")
+                
+                if "application/json" in content_type:
+                    ai_response_data = response.json()
+                    print(f"AI response data: {ai_response_data}")  # Debug log
+                    
+                    # Extract the actual response text
+                    if isinstance(ai_response_data, dict):
+                        ai_response_text = (
+                            ai_response_data.get('text') or 
+                            ai_response_data.get('output') or 
+                            ai_response_data.get('message') or 
+                            ai_response_data.get('response') or
+                            "I understand your question. Let me help you with that!"
+                        )
+                    else:
+                        ai_response_text = str(ai_response_data)
+                else:
+                    # Plain text response
+                    ai_response_text = response.text
+                
+                return jsonify({
+                    "response": ai_response_text,
+                    "messageCount": chatbot_usage.message_count,
+                    "canUse": chatbot_usage.message_count < 3
+                }), 200
+            else:
+                print(f"Webhook failed with status {response.status_code}: {response.text}")
+                # Fallback response if webhook fails
+                fallback_response = generate_fallback_response(message, prompt)
+                return jsonify({
+                    "response": fallback_response,
+                    "messageCount": chatbot_usage.message_count,
+                    "canUse": chatbot_usage.message_count < 3
+                }), 200
+                
+        except requests.exceptions.RequestException as e:
+            print(f"Webhook request failed: {str(e)}")
+            # Fallback response for network errors
+            fallback_response = generate_fallback_response(message, prompt)
+            return jsonify({
+                "response": fallback_response,
+                "messageCount": chatbot_usage.message_count,
+                "canUse": chatbot_usage.message_count < 3
+            }), 200
         
     except Exception as e:
+        print(f"General error in send_chatbot_message: {str(e)}")
         db.session.rollback()
         return jsonify({
             "message": "An error occurred while processing your message",
             "error": str(e)
         }), 500
-
-
-
 
 
 if __name__ == "__main__":
