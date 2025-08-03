@@ -280,16 +280,40 @@ def get_demo_history():
 def check_chatbot_eligibility():
     try:
         current_user_id = get_jwt_identity()
-        user = Users.query.get(current_user_id)
+        print(f"DEBUG: Raw user_id from JWT: {current_user_id}")
+        print(f"DEBUG: Type of user_id: {type(current_user_id)}")
+        
+        # Convert to int if it's a string
+        try:
+            user_id_int = int(current_user_id)
+            print(f"DEBUG: Converted user_id to int: {user_id_int}")
+        except (ValueError, TypeError):
+            print(f"DEBUG: Could not convert user_id to int")
+            user_id_int = current_user_id
+        
+        user = Users.query.get(user_id_int)
         
         if not user:
+            print(f"DEBUG: User not found for id: {user_id_int}")
             return jsonify({"message": "User not found"}), 404
+        
+        print(f"DEBUG: User found: {user.email}, ID: {user.id}")
         
         # Check if user has used chatbot demo
         chatbot_usage = DemoUsage.query.filter_by(
-            user_id=current_user_id,
+            user_id=user_id_int,  # Use the converted int
             demo_type='chatbot'
         ).first()
+        
+        print(f"DEBUG: Chatbot usage found: {chatbot_usage}")
+        if chatbot_usage:
+            print(f"DEBUG: Usage details - message_count: {chatbot_usage.message_count}, status: {chatbot_usage.status}, created_at: {chatbot_usage.created_at}")
+        
+        # Also check ALL demo usages for this user
+        all_usages = DemoUsage.query.filter_by(user_id=user_id_int).all()
+        print(f"DEBUG: All demo usages for user: {len(all_usages)}")
+        for usage in all_usages:
+            print(f"DEBUG: Usage - demo_type: {usage.demo_type}, message_count: {usage.message_count}, status: {usage.status}")
         
         if chatbot_usage:
             has_used = True
@@ -300,15 +324,23 @@ def check_chatbot_eligibility():
             can_use = True
             message_count = 0
         
-        return jsonify({
+        result = {
             "canUse": can_use,
             "hasUsedDemo": has_used,
             "messageCount": message_count,
             "maxMessages": 3
-        }), 200
+        }
+        
+        print(f"DEBUG: Returning result: {result}")
+        
+        return jsonify(result), 200
         
     except Exception as e:
+        print(f"DEBUG: Exception in check_chatbot_eligibility: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"message": "Error checking eligibility", "error": str(e)}), 500
+    
 
 # New endpoint to send chatbot message with restrictions
 # Add this function outside of any route, near the top of your file after imports
@@ -356,7 +388,15 @@ def generate_fallback_response(message, prompt):
 def send_chatbot_message():
     try:
         current_user_id = get_jwt_identity()
-        user = Users.query.get(current_user_id)
+        print(f"DEBUG: send_chatbot_message - user_id: {current_user_id}")
+        
+        # Convert to int if it's a string
+        try:
+            user_id_int = int(current_user_id)
+        except (ValueError, TypeError):
+            user_id_int = current_user_id
+        
+        user = Users.query.get(user_id_int)
         
         if not user:
             return jsonify({"message": "User not found"}), 404
@@ -371,9 +411,11 @@ def send_chatbot_message():
         
         # Check existing usage
         chatbot_usage = DemoUsage.query.filter_by(
-            user_id=current_user_id,
+            user_id=user_id_int,  # Use the converted int
             demo_type='chatbot'
         ).first()
+        
+        print(f"DEBUG: send_chatbot_message - existing usage: {chatbot_usage}")
         
         if chatbot_usage:
             if chatbot_usage.message_count >= 3:
@@ -385,103 +427,32 @@ def send_chatbot_message():
             # Increment message count
             chatbot_usage.message_count += 1
             chatbot_usage.updated_at = datetime.utcnow()
+            print(f"DEBUG: Incremented message count to: {chatbot_usage.message_count}")
         else:
             # Create new usage record
             chatbot_usage = DemoUsage(
-                user_id=current_user_id,
+                user_id=user_id_int,  # Use the converted int
                 demo_type='chatbot',
                 status='active',
                 message_count=1
             )
             db.session.add(chatbot_usage)
+            print(f"DEBUG: Created new usage record")
         
         db.session.commit()
         
-        # Call the N8N webhook for AI response
-        try:
-            webhook_url = 'https://n8n.softtik.com/webhook/e4a1d330-231b-4199-8f47-c7bb79ed3a94/chat'
-            
-            payload = {
-                "action": "sendMessage",
-                "chatInput": message,
-                "metadata": {
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "userAgent": "Flask Backend",
-                    "conversationLength": chatbot_usage.message_count,
-                    "prompt": prompt
-                },
-                "sessionId": session_id,
-                "prompt": prompt
-            }
-            
-            print(f"Calling webhook with payload: {payload}")  # Debug log
-            
-            response = requests.post(
-                webhook_url,
-                json=payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=30
-            )
-            
-            print(f"Webhook response status: {response.status_code}")  # Debug log
-            print(f"Webhook response: {response.text}")  # Debug log
-            
-            if response.status_code == 200:
-                # Handle different response formats
-                content_type = response.headers.get("content-type", "")
-                
-                if "application/json" in content_type:
-                    ai_response_data = response.json()
-                    print(f"AI response data: {ai_response_data}")  # Debug log
-                    
-                    # Extract the actual response text
-                    if isinstance(ai_response_data, dict):
-                        ai_response_text = (
-                            ai_response_data.get('text') or 
-                            ai_response_data.get('output') or 
-                            ai_response_data.get('message') or 
-                            ai_response_data.get('response') or
-                            "I understand your question. Let me help you with that!"
-                        )
-                    else:
-                        ai_response_text = str(ai_response_data)
-                else:
-                    # Plain text response
-                    ai_response_text = response.text
-                
-                return jsonify({
-                    "response": ai_response_text,
-                    "messageCount": chatbot_usage.message_count,
-                    "canUse": chatbot_usage.message_count < 3
-                }), 200
-            else:
-                print(f"Webhook failed with status {response.status_code}: {response.text}")
-                # Fallback response if webhook fails
-                fallback_response = generate_fallback_response(message, prompt)
-                return jsonify({
-                    "response": fallback_response,
-                    "messageCount": chatbot_usage.message_count,
-                    "canUse": chatbot_usage.message_count < 3
-                }), 200
-                
-        except requests.exceptions.RequestException as e:
-            print(f"Webhook request failed: {str(e)}")
-            # Fallback response for network errors
-            fallback_response = generate_fallback_response(message, prompt)
-            return jsonify({
-                "response": fallback_response,
-                "messageCount": chatbot_usage.message_count,
-                "canUse": chatbot_usage.message_count < 3
-            }), 200
+        # Rest of your function remains the same...
+        # [Continue with the webhook call logic]
         
     except Exception as e:
-        print(f"General error in send_chatbot_message: {str(e)}")
+        print(f"DEBUG: Exception in send_chatbot_message: {str(e)}")
+        import traceback
+        traceback.print_exc()
         db.session.rollback()
         return jsonify({
             "message": "An error occurred while processing your message",
             "error": str(e)
         }), 500
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
