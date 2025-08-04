@@ -328,7 +328,7 @@ def check_chatbot_eligibility():
             "canUse": can_use,
             "hasUsedDemo": has_used,
             "messageCount": message_count,
-            "maxMessages": 3
+            "maxMessages": 10
         }
         
         print(f"DEBUG: Returning result: {result}")
@@ -411,7 +411,7 @@ def send_chatbot_message():
         
         # Check existing usage
         chatbot_usage = DemoUsage.query.filter_by(
-            user_id=user_id_int,  # Use the converted int
+            user_id=user_id_int,
             demo_type='chatbot'
         ).first()
         
@@ -431,7 +431,7 @@ def send_chatbot_message():
         else:
             # Create new usage record
             chatbot_usage = DemoUsage(
-                user_id=user_id_int,  # Use the converted int
+                user_id=user_id_int,
                 demo_type='chatbot',
                 status='active',
                 message_count=1
@@ -441,8 +441,52 @@ def send_chatbot_message():
         
         db.session.commit()
         
-        # Rest of your function remains the same...
-        # [Continue with the webhook call logic]
+        # Try to call the N8N webhook
+        try:
+            webhook_url = 'https://n8n.softtik.com/webhook/e4a1d330-231b-4199-8f47-c7bb79ed3a94/chat'
+            
+            payload = {
+                "action": "sendMessage",
+                "chatInput": message,
+                "metadata": {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "userAgent": request.headers.get('User-Agent', ''),
+                    "conversationLength": chatbot_usage.message_count,
+                    "prompt": prompt
+                },
+                "sessionId": session_id,
+                "prompt": prompt
+            }
+            
+            response = requests.post(
+                webhook_url,
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                # Try to parse response
+                try:
+                    response_data = response.json()
+                    bot_response = response_data.get('text', response_data.get('output', response_data.get('message', 'I understand your question. Let me help you with that!')))
+                except:
+                    bot_response = response.text if response.text else 'I understand your question. Let me help you with that!'
+            else:
+                # Use fallback response
+                bot_response = generate_fallback_response(message, prompt)
+                
+        except requests.exceptions.RequestException as e:
+            print(f"DEBUG: Webhook call failed: {str(e)}")
+            # Use fallback response
+            bot_response = generate_fallback_response(message, prompt)
+        
+        return jsonify({
+            "response": bot_response,
+            "messageCount": chatbot_usage.message_count,
+            "canUse": chatbot_usage.message_count < 3,
+            "success": True
+        }), 200
         
     except Exception as e:
         print(f"DEBUG: Exception in send_chatbot_message: {str(e)}")
@@ -453,6 +497,7 @@ def send_chatbot_message():
             "message": "An error occurred while processing your message",
             "error": str(e)
         }), 500
+    
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
